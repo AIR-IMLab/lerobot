@@ -31,8 +31,6 @@ from libero.libero.envs import OffScreenRenderEnv
 
 from lerobot.types import RobotObservation
 
-from .utils import _LazyAsyncVectorEnv
-
 
 def _parse_camera_names(camera_name: str | Sequence[str]) -> list[str]:
     """Normalize camera_name into a non-empty list of strings."""
@@ -405,6 +403,57 @@ def _make_env_fns(
     return fns
 
 
+class _LazyAsyncVectorEnv:
+    """Wrapper that defers AsyncVectorEnv creation until first use.
+
+    Creating all tasks' AsyncVectorEnvs upfront spawns N_tasks × n_envs worker
+    processes, all of which allocate EGL/GPU resources immediately. Since tasks
+    are evaluated sequentially, only one task's workers need to be alive at a
+    time. This wrapper stores the factory functions and creates the real
+    AsyncVectorEnv on first reset(), keeping peak process count = n_envs.
+    """
+
+    def __init__(self, env_fns: list[Callable]):
+        self._env_fns = env_fns
+        self._env: gym.vector.AsyncVectorEnv | None = None
+        self.num_envs = len(env_fns)
+        # Instantiate one env to expose spaces (no GPU — _ensure_env is lazy).
+        tmp = env_fns[0]()
+        self.observation_space = tmp.observation_space
+        self.action_space = tmp.action_space
+        self.single_observation_space = tmp.observation_space
+        self.single_action_space = tmp.action_space
+        tmp.close()
+
+    def _ensure(self):
+        if self._env is None:
+            self._env = gym.vector.AsyncVectorEnv(self._env_fns, context="forkserver")
+
+    def reset(self, **kwargs):
+        self._ensure()
+        return self._env.reset(**kwargs)
+
+    def step(self, actions):
+        self._ensure()
+        return self._env.step(actions)
+
+    def call(self, name, *args, **kwargs):
+        self._ensure()
+        return self._env.call(name, *args, **kwargs)
+
+    def get_attr(self, name):
+        self._ensure()
+        return self._env.get_attr(name)
+
+    def close(self):
+        if self._env is not None:
+            self._env.close()
+            self._env = None
+
+    def __del__(self):
+        self.close()
+
+
 # ---- Main API ----------------------------------------------------------------
 
 
@@ -458,11 +507,6 @@ def create_libero_envs(
         if not selected:
             raise ValueError(f"No tasks selected for suite '{suite_name}' (available: {total}).")
 
-        # All tasks in a suite share identical observation/action spaces.
-        # Probe once and reuse to avoid creating a temp env per task.
-        cached_obs_space: spaces.Space | None = None
-        cached_act_space: spaces.Space | None = None
-
         for tid in selected:
             fns = _make_env_fns(
                 suite=suite,
@@ -477,11 +521,7 @@ def create_libero_envs(
                 camera_name_mapping=camera_name_mapping,
             )
             if is_async:
-                lazy = _LazyAsyncVectorEnv(fns, cached_obs_space, cached_act_space)
-                if cached_obs_space is None:
-                    cached_obs_space = lazy.observation_space
-                    cached_act_space = lazy.action_space
-                out[suite_name][tid] = lazy
+                out[suite_name][tid] = _LazyAsyncVectorEnv(fns)
             else:
                 out[suite_name][tid] = env_cls(fns)
             print(f"Built vec env | suite={suite_name} | task_id={tid} | n_envs={n_envs}")
