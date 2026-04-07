@@ -22,6 +22,7 @@ from typing import Any
 import draccus
 import gymnasium as gym
 from gymnasium.envs.registration import registry as gym_registry
+from gymnasium.vector import AutoresetMode
 
 from lerobot.configs import FeatureType, PolicyFeature
 from lerobot.processor import IsaaclabArenaProcessorStep, LiberoProcessorStep, PolicyProcessorPipeline
