@@ -116,7 +116,7 @@ jobs:
             bash -c "
               hf auth login --token \"\$HF_USER_TOKEN\" --add-to-git-credential 2>/dev/null || true
               lerobot-eval \
-                --policy.path=pepijn223/smolvla_libero \
+                --policy.path=pepijn223/smolvla_libero_plus \
                 --env.type=libero \
                 --env.task=libero_spatial \
                 --eval.batch_size=1 \
@@ -145,7 +145,7 @@ jobs:
             --artifacts-dir /tmp/libero-artifacts \
             --env libero \
             --task libero_spatial \
-            --policy pepijn223/smolvla_libero
+            --policy pepijn223/smolvla_libero_plus
 
       - name: Upload Libero rollout video
         if: always()
@@ -268,7 +268,7 @@ jobs:
             bash -c "
               hf auth login --token \"\$HF_USER_TOKEN\" --add-to-git-credential 2>/dev/null || true
               lerobot-eval \
-                --policy.path=pepijn223/smolvla_libero \
+                --policy.path=pepijn223/smolvla_libero_plus \
                 --env.type=libero_plus \
                 --env.task=libero_spatial \
                 --eval.batch_size=1 \
@@ -294,7 +294,7 @@ jobs:
             --artifacts-dir /tmp/libero-plus-artifacts \
             --env libero_plus \
             --task libero_spatial \
-            --policy pepijn223/smolvla_libero
+            --policy pepijn223/smolvla_libero_plus
 
       - name: Upload LIBERO-plus rollout video
         if: always()
