@@ -24,7 +24,7 @@ Usage:
         --artifacts-dir /tmp/libero-artifacts \\
         --env libero \\
         --task libero_spatial \\
-        --policy pepijn223/smolvla_libero
+        --policy pepijn223/smolvla_robocerebra
 
 Writes <artifacts-dir>/metrics.json. The CI workflow then uploads this file
 as a GitHub Actions artifact named "<env>-metrics".
@@ -72,7 +72,9 @@ def main() -> int:
     parser.add_argument("--artifacts-dir", required=True, help="Path to the mounted artifacts volume")
     parser.add_argument("--env", required=True, help="Environment name (e.g. libero)")
     parser.add_argument("--task", required=True, help="Task name (e.g. libero_spatial)")
-    parser.add_argument("--policy", required=True, help="Policy hub path (e.g. pepijn223/smolvla_libero)")
+    parser.add_argument(
+        "--policy", required=True, help="Policy hub path (e.g. pepijn223/smolvla_robocerebra)"
+    )
     args = parser.parse_args()
 
     artifacts_dir = Path(args.artifacts_dir)
