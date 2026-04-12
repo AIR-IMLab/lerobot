@@ -155,8 +155,12 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
     def action_feature(self) -> PolicyFeature | None:
         if not self.output_features:
             return None
-        for ft_name, ft in self.output_features.items():
-            if ft.type is FeatureType.ACTION and ft_name == ACTION:
+        if ACTION in self.output_features:
+            ft = self.output_features[ACTION]
+            if ft.type is FeatureType.ACTION:
+                return ft
+        for _, ft in self.output_features.items():
+            if ft.type is FeatureType.ACTION:
                 return ft
         return None
 

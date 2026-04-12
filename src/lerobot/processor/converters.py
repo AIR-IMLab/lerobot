@@ -346,16 +346,26 @@ def batch_to_transition(batch: dict[str, Any]) -> EnvTransition:
         raise ValueError(f"EnvTransition must be a dictionary. Got {type(batch).__name__}")
 
     action = batch.get(ACTION)
+    if action is None and "actions" in batch:
+        action = batch["actions"]
     if action is not None and not isinstance(action, PolicyAction):
         raise ValueError(f"Action should be a PolicyAction type got {type(action)}")
 
     # Extract observation and complementary data keys.
     observation_keys = {k: v for k, v in batch.items() if k.startswith(OBS_PREFIX)}
+    # RoboMME exports use top-level image / wrist_image / state without the observation.* prefix.
+    if not observation_keys:
+        if "image" in batch:
+            observation_keys["observation.images.image"] = batch["image"]
+        if "wrist_image" in batch:
+            observation_keys["observation.images.wrist_image"] = batch["wrist_image"]
+        if "state" in batch:
+            observation_keys["observation.state"] = batch["state"]
     complementary_data = _extract_complementary_data(batch)
 
     return create_transition(
         observation=observation_keys if observation_keys else None,
-        action=batch.get(ACTION),
+        action=action,
         reward=batch.get(REWARD, 0.0),
         done=batch.get(DONE, False),
         truncated=batch.get(TRUNCATED, False),

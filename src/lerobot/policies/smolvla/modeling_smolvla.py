@@ -270,6 +270,16 @@ class SmolVLAPolicy(PreTrainedPolicy):
     def get_optim_params(self) -> dict:
         return self.parameters()
 
+    def _original_action_dim(self, batch: dict[str, Tensor] | None = None) -> int:
+        if self.config.action_feature is not None:
+            return self.config.action_feature.shape[0]
+        if batch is not None and ACTION in batch and batch[ACTION] is not None:
+            return batch[ACTION].shape[-1]
+        raise ValueError(
+            "Cannot determine action dimension: expected `output_features` to include an ACTION feature "
+            "or the batch to contain `action`."
+        )
+
     def _get_action_chunk(
         self, batch: dict[str, Tensor], noise: Tensor | None = None, **kwargs: Unpack[ActionSelectKwargs]
     ) -> Tensor:
@@ -292,7 +302,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
         )
 
         # Unpad actions
-        original_action_dim = self.config.action_feature.shape[0]
+        original_action_dim = self._original_action_dim(batch)
         actions = actions[:, :, :original_action_dim]
 
         if self.config.adapt_to_pi_aloha:
@@ -377,7 +387,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
         actions_is_pad = batch.get("action_is_pad")
         loss_dict = {}
         losses = self.model.forward(images, img_masks, lang_tokens, lang_masks, state, actions, noise, time)
-        original_action_dim = self.config.action_feature.shape[0]
+        original_action_dim = self._original_action_dim(batch)
         losses = losses[:, :, :original_action_dim]
         loss_dict["losses_after_forward"] = losses.clone().mean().item()
 
@@ -684,11 +694,24 @@ class VLAFlowMatching(nn.Module):
         lang_emb_dim = lang_emb.shape[-1]
         lang_emb = lang_emb * math.sqrt(lang_emb_dim)
 
+        lang_len = lang_emb.shape[1]
+        lang_masks = lang_masks.to(device=lang_emb.device, dtype=torch.bool)
+        if lang_masks.shape[1] != lang_len:
+            if lang_masks.shape[1] > lang_len:
+                lang_masks = lang_masks[:, :lang_len]
+            else:
+                pad = torch.zeros(
+                    lang_emb.shape[0],
+                    lang_len - lang_masks.shape[1],
+                    dtype=torch.bool,
+                    device=lang_emb.device,
+                )
+                lang_masks = torch.cat([lang_masks, pad], dim=1)
+
         embs.append(lang_emb)
         pad_masks.append(lang_masks)
 
-        num_lang_embs = lang_emb.shape[1]
-        att_masks += [0] * num_lang_embs
+        att_masks += [0] * lang_len
 
         state_emb = self.state_proj(state)
         state_emb = state_emb[:, None, :] if state_emb.ndim == 2 else state_emb
@@ -704,6 +727,13 @@ class VLAFlowMatching(nn.Module):
         att_masks += [1] * (states_seq_len)
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
+        n_pad = pad_masks.shape[1]
+        n_att = len(att_masks)
+        if n_att != n_pad:
+            if n_att > n_pad:
+                att_masks = att_masks[:n_pad]
+            else:
+                att_masks = att_masks + [0] * (n_pad - n_att)
         att_masks = torch.tensor(att_masks, dtype=torch.bool, device=pad_masks.device)
         att_masks = att_masks[None, :]
 
@@ -753,7 +783,7 @@ class VLAFlowMatching(nn.Module):
         pad_masks.append(action_time_mask)
 
         # Set attention masks so that image, language and state inputs do not attend to action tokens
-        att_masks += [1] * self.config.chunk_size
+        att_masks += [1] * action_time_dim
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
         att_masks = torch.tensor(att_masks, dtype=embs.dtype, device=embs.device)
@@ -791,10 +821,15 @@ class VLAFlowMatching(nn.Module):
             use_cache=False,
             fill_kv_cache=False,
         )
-        suffix_out = suffix_out[:, -self.config.chunk_size :]
+        action_horizon = actions.shape[1]
+        suffix_out = suffix_out[:, -action_horizon:]
         # Original openpi code, upcast attention output
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self.action_out_proj(suffix_out)
+        if u_t.shape != v_t.shape:
+            d = min(u_t.shape[-1], v_t.shape[-1])
+            u_t = u_t[..., :d]
+            v_t = v_t[..., :d]
         losses = F.mse_loss(u_t, v_t, reduction="none")
         return losses
 
