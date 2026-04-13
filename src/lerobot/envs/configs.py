@@ -516,16 +516,16 @@ class RoboMMEEnv(EnvConfig):
     features: dict[str, PolicyFeature] = field(
         default_factory=lambda: {
             ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(8,)),
-            "front_rgb": PolicyFeature(type=FeatureType.VISUAL, shape=(256, 256, 3)),
-            "wrist_rgb": PolicyFeature(type=FeatureType.VISUAL, shape=(256, 256, 3)),
+            "image": PolicyFeature(type=FeatureType.VISUAL, shape=(256, 256, 3)),
+            "wrist_image": PolicyFeature(type=FeatureType.VISUAL, shape=(256, 256, 3)),
             OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(8,)),
         }
     )
     features_map: dict[str, str] = field(
         default_factory=lambda: {
             ACTION: ACTION,
-            "front_rgb": f"{OBS_IMAGES}.front",
-            "wrist_rgb": f"{OBS_IMAGES}.wrist",
+            "image": f"{OBS_IMAGES}.image",
+            "wrist_image": f"{OBS_IMAGES}.wrist_image",
             OBS_STATE: OBS_STATE,
         }
     )
@@ -546,15 +546,6 @@ class RoboMMEEnv(EnvConfig):
             episode_length=self.episode_length,
             task_ids=self.task_ids,
             env_cls=env_cls,
-        )
-
-    def get_env_processors(self):
-        from lerobot.processor.env_processor import RoboMMEProcessorStep
-        from lerobot.processor.pipeline import PolicyProcessorPipeline
-
-        return (
-            PolicyProcessorPipeline(steps=[RoboMMEProcessorStep()]),
-            PolicyProcessorPipeline(steps=[]),
         )
 
 

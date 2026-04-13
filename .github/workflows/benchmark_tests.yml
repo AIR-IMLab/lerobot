@@ -303,7 +303,7 @@ jobs:
                 --eval.n_episodes=1 \
                 --eval.use_async_envs=false \
                 --policy.device=cuda \
-                '--rename_map={\"observation.images.front\": \"observation.images.camera1\", \"observation.images.wrist\": \"observation.images.camera2\"}' \
+                '--rename_map={\"observation.images.image\": \"observation.images.camera1\", \"observation.images.wrist_image\": \"observation.images.camera2\"}' \
                 --policy.empty_cameras=3 \
                 --output_dir=/tmp/eval-artifacts
             "
