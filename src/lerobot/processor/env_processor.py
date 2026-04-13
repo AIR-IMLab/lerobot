@@ -226,3 +226,35 @@ class IsaaclabArenaProcessorStep(ObservationProcessorStep):
 
     def observation(self, observation):
         return self._process_observation(observation)
+
+
+@dataclass
+@ProcessorStepRegistry.register(name="robomme_processor")
+class RoboMMEProcessorStep(ObservationProcessorStep):
+    """Converts raw RoboMME observations to LeRobot format.
+
+    The RoboMME env returns flat keys (front_rgb, wrist_rgb, state).
+    This step maps them to observation.images.front, observation.images.wrist,
+    observation.state so the policy preprocessor can find them.
+    """
+
+    def _process_observation(self, observation):
+        processed = {}
+        for key, value in observation.items():
+            if key == "front_rgb":
+                processed[f"{OBS_IMAGES}.front"] = value
+            elif key == "wrist_rgb":
+                processed[f"{OBS_IMAGES}.wrist"] = value
+            elif key == "state":
+                processed[OBS_STATE] = value
+            else:
+                processed[key] = value
+        return processed
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
+
+    def observation(self, observation):
+        return self._process_observation(observation)

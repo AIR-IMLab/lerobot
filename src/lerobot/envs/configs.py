@@ -548,6 +548,15 @@ class RoboMMEEnv(EnvConfig):
             env_cls=env_cls,
         )
 
+    def get_env_processors(self):
+        from lerobot.processor.env_processor import RoboMMEProcessorStep
+        from lerobot.processor.pipeline import PolicyProcessorPipeline
+
+        return (
+            PolicyProcessorPipeline(steps=[RoboMMEProcessorStep()]),
+            PolicyProcessorPipeline(steps=[]),
+        )
+
 
 @EnvConfig.register_subclass("isaaclab_arena")
 @dataclass
