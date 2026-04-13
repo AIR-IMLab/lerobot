@@ -73,10 +73,11 @@ COPY --chown=user_lerobot:user_lerobot src/ src/
 # when embedded in self-referential extras, so install it explicitly too.
 # Step 1: install lerobot with extras (libero git dep may be silently skipped)
 RUN uv pip install --no-cache -e ".[libero_plus,smolvla]"
-# Step 2: force-install the LIBERO-plus git dep (uv may "audit" it as satisfied
-# without actually making it importable due to the nested package structure)
-RUN uv pip install --no-cache --force-reinstall --no-deps \
-    "libero @ git+https://github.com/sylvestf/LIBERO-plus.git@main" \
+# Step 2: clone and pip-install LIBERO-plus directly.
+# uv pip install from git silently installs metadata-only without the actual
+# package files for this repo's nested structure. Clone + editable install works.
+RUN git clone --depth=1 https://github.com/sylvestf/LIBERO-plus.git /tmp/libero-plus \
+    && uv pip install --no-cache --no-deps -e /tmp/libero-plus \
     && python -c "from libero.libero import benchmark; print('libero-plus OK')"
 
 # Pre-download libero assets so nothing is fetched at runtime (CI timeout risk).
