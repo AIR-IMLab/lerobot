@@ -77,9 +77,10 @@ COPY --chown=user_lerobot:user_lerobot setup.py pyproject.toml uv.lock README.md
 COPY --chown=user_lerobot:user_lerobot src/ src/
 
 # Install lerobot base only (no benchmark extras — RoboTwin is source-only).
-# Use uv pip with --python-version to bypass lerobot's requires-python>=3.12
-# since we need Python 3.11 for open3d compatibility.
-RUN uv pip install --no-cache --python-version 3.11 -e "."
+# Patch requires-python to allow 3.11 (needed for open3d==0.18.0 which has no cp312 wheels).
+# uv enforces requires-python strictly and has no bypass flag.
+RUN sed -i 's/requires-python = ">=3.12"/requires-python = ">=3.11"/' pyproject.toml \
+    && uv pip install --no-cache -e "."
 
 # ── 2. Install RoboTwin 2.0 simulator stack ────────────────────────────────
 # Clone at a pinned commit for reproducibility.
