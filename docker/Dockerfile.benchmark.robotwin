@@ -113,10 +113,12 @@ RUN uv pip install --no-cache --no-build-isolation --python .venv/bin/python \
     "git+https://github.com/facebookresearch/pytorch3d.git@stable"
 
 # CuRobo — NVIDIA motion generation library; requires nvcc (devel image).
+# TORCH_CUDA_ARCH_LIST must be set or the build fails with empty arch list.
 RUN cd ${ROBOTWIN_ROOT}/envs \
     && git clone --depth=1 https://github.com/NVlabs/curobo.git \
     && cd curobo \
-    && uv pip install -e . --no-build-isolation --no-cache
+    && TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0" \
+       uv pip install -e . --no-build-isolation --no-cache
 
 # ── 3. Apply upstream patches (mirrors script/_install.sh) ─────────────────
 # patch 1: mplib — remove `or collide` from planner.py line 807.
