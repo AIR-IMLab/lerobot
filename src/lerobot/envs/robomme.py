@@ -109,6 +109,19 @@ class RoboMMEGymEnv(gym.Env):
 
         return self._convert_obs(obs), float(reward), terminated_bool, truncated_bool, conv_info
 
+    def render(self) -> np.ndarray | None:
+        """Return the front camera image for video recording."""
+        if self._env is None:
+            return None
+        try:
+            obs = self._env.get_obs()
+            front = obs.get("front_rgb_list")
+            if front is not None:
+                return front[-1] if isinstance(front, list) else front
+        except Exception:  # noqa: BLE001
+            return np.zeros((256, 256, 3), dtype=np.uint8)
+        return np.zeros((256, 256, 3), dtype=np.uint8)
+
     def _convert_obs(self, obs: dict) -> dict:
         front_rgb = (
             obs["front_rgb_list"][-1] if isinstance(obs["front_rgb_list"], list) else obs["front_rgb_list"]
