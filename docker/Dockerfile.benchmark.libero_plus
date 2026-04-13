@@ -75,7 +75,7 @@ COPY --chown=user_lerobot:user_lerobot src/ src/
 RUN uv pip install --no-cache -e ".[libero_plus,smolvla]"
 # Step 2: force-install the LIBERO-plus git dep (uv may "audit" it as satisfied
 # without actually making it importable due to the nested package structure)
-RUN uv pip install --no-cache --reinstall-package libero \
+RUN uv pip install --no-cache --force-reinstall --no-deps \
     "libero @ git+https://github.com/sylvestf/LIBERO-plus.git@main" \
     && python -c "from libero.libero import benchmark; print('libero-plus OK')"
 
