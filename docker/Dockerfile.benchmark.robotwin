@@ -102,7 +102,8 @@ RUN uv pip install --no-cache --python .venv/bin/python \
     "imageio==2.34.2" \
     "termcolor" \
     "zarr" \
-    "pydantic"
+    "pydantic" \
+    "h5py"
 
 # pytorch3d — must be built from source (no universal wheel available).
 # This is the slowest step (~10 min); cached in subsequent builds.
