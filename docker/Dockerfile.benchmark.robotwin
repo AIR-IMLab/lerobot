@@ -26,13 +26,12 @@
 #            lerobot-eval --env.type=robotwin --env.task=beat_block_hammer ...
 
 # RoboTwin requires CUDA devel image for CuRobo compilation (nvcc needed).
-# Python 3.10 is used — RoboTwin's simulator stack (SAPIEN, mplib) has been
-# tested with 3.10; 3.12 wheel availability is not yet guaranteed upstream.
+# Python 3.12 is used — sapien==3.0.0b1 has cp312 wheels and lerobot requires >=3.12.
 ARG CUDA_VERSION=12.1.1
 ARG OS_VERSION=22.04
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${OS_VERSION}
 
-ARG PYTHON_VERSION=3.10
+ARG PYTHON_VERSION=3.12
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/lerobot/.venv/bin:$PATH \
@@ -77,9 +76,7 @@ COPY --chown=user_lerobot:user_lerobot setup.py pyproject.toml uv.lock README.md
 COPY --chown=user_lerobot:user_lerobot src/ src/
 
 # Install lerobot base only (no benchmark extras — RoboTwin is source-only).
-# Use uv pip install (not uv sync) because uv sync enforces requires-python>=3.12
-# which rejects Python 3.10. pip-style install bypasses this check.
-RUN uv pip install --no-cache -e "."
+RUN uv sync --locked --no-cache
 
 # ── 2. Install RoboTwin 2.0 simulator stack ────────────────────────────────
 # Clone at a pinned commit for reproducibility.
