@@ -67,6 +67,7 @@ class RoboMMEGymEnv(gym.Env):
         self._dataset = dataset
         self._episode_idx = episode_idx
         self._max_steps = max_steps
+        self._max_episode_steps = max_steps
 
         self._builder = BenchmarkEnvBuilder(
             env_id=task,
