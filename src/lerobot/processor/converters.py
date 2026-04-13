@@ -354,11 +354,6 @@ def batch_to_transition(batch: dict[str, Any]) -> EnvTransition:
     # Extract observation and complementary data keys.
     observation_keys = {k: v for k, v in batch.items() if k.startswith(OBS_PREFIX)}
     # RoboMME exports use top-level image / wrist_image / state without the observation.* prefix.
-    import logging as _log
-
-    _log.getLogger(__name__).warning(
-        "batch_to_transition keys: %s | obs_keys found: %s", list(batch.keys()), list(observation_keys.keys())
-    )
     if not observation_keys:
         if "image" in batch:
             observation_keys["observation.images.image"] = batch["image"]
