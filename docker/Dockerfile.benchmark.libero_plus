@@ -77,6 +77,8 @@ RUN uv pip install --no-cache -e ".[libero_plus,smolvla]"
 # install from git nor editable installs handle correctly (metadata-only install).
 # Clone and add to PYTHONPATH as the only reliable way to make it importable.
 RUN git clone --depth=1 https://github.com/sylvestf/LIBERO-plus.git /home/user_lerobot/libero-plus \
+    && mkdir -p /home/user_lerobot/.libero \
+    && echo 'assets: /tmp' > /home/user_lerobot/.libero/config.yaml \
     && python -c "import sys; sys.path.insert(0, '/home/user_lerobot/libero-plus'); from libero.libero import benchmark; print('libero-plus OK')"
 ENV PYTHONPATH="/home/user_lerobot/libero-plus:${PYTHONPATH}"
 
