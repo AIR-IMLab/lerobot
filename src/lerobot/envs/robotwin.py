@@ -254,7 +254,7 @@ class RoboTwinEnv(gym.Env):
         assert self._env is not None  # set by _ensure_env() above
 
         actual_seed = self.episode_index if seed is None else seed
-        self._env.setup_demo(seed=actual_seed, is_test=True)
+        self._env.setup_demo(seed=actual_seed, is_test=True, random_setting={})
         self.episode_index += self._reset_stride
         self._step_count = 0
 
@@ -308,7 +308,10 @@ class RoboTwinEnv(gym.Env):
     def close(self) -> None:
         if self._env is not None:
             if hasattr(self._env, "close_env"):
-                self._env.close_env(clearance=False)
+                import contextlib
+
+                with contextlib.suppress(TypeError):
+                    self._env.close_env()
             self._env = None
 
 
