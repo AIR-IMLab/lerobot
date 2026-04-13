@@ -76,9 +76,9 @@ RUN uv pip install --no-cache -e ".[libero_plus,smolvla]"
 # Step 2: LIBERO-plus has a nested libero/libero/ structure that neither uv pip
 # install from git nor editable installs handle correctly (metadata-only install).
 # Clone and add to PYTHONPATH as the only reliable way to make it importable.
-RUN git clone --depth=1 https://github.com/sylvestf/LIBERO-plus.git /opt/libero-plus \
-    && python -c "import sys; sys.path.insert(0, '/opt/libero-plus'); from libero.libero import benchmark; print('libero-plus OK')"
-ENV PYTHONPATH="/opt/libero-plus:${PYTHONPATH}"
+RUN git clone --depth=1 https://github.com/sylvestf/LIBERO-plus.git /home/user_lerobot/libero-plus \
+    && python -c "import sys; sys.path.insert(0, '/home/user_lerobot/libero-plus'); from libero.libero import benchmark; print('libero-plus OK')"
+ENV PYTHONPATH="/home/user_lerobot/libero-plus:${PYTHONPATH}"
 
 # Pre-download libero assets so nothing is fetched at runtime (CI timeout risk).
 # libero/libero/__init__.py prompts with input() when ~/.libero/config.yaml is
