@@ -109,7 +109,7 @@ RUN uv pip install --no-cache --python .venv/bin/python \
 
 # pytorch3d — must be built from source (no universal wheel available).
 # This is the slowest step (~10 min); cached in subsequent builds.
-RUN uv pip install --no-cache --python .venv/bin/python \
+RUN uv pip install --no-cache --no-build-isolation --python .venv/bin/python \
     "git+https://github.com/facebookresearch/pytorch3d.git@stable"
 
 # CuRobo — NVIDIA motion generation library; requires nvcc (devel image).
