@@ -356,7 +356,7 @@ jobs:
             lerobot-benchmark-robotwin:ci \
             bash -c "
               hf auth login --token \"\$HF_USER_TOKEN\" --add-to-git-credential 2>/dev/null || true
-              lerobot-eval \
+              cd /opt/robotwin && lerobot-eval \
                 --policy.path=pepijn223/smolvla_robotwin \
                 --env.type=robotwin \
                 --env.task=beat_block_hammer \
