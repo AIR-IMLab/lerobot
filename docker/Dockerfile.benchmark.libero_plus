@@ -79,9 +79,11 @@ RUN uv pip install --no-cache -e ".[libero_plus,smolvla]"
 RUN git clone --depth=1 https://github.com/sylvestf/LIBERO-plus.git /home/user_lerobot/libero-plus \
     && mkdir -p /home/user_lerobot/.libero \
     && echo 'assets: /tmp' > /home/user_lerobot/.libero/config.yaml
-# Install LIBERO-plus transitive deps. Pin robosuite==1.4.1 — the LIBERO-plus fork
-# imports robosuite.environments.manipulation.single_arm_env which was removed in v1.5+.
-RUN uv pip install --no-cache "robosuite==1.4.1" bddl
+# Install LIBERO-plus deps (robosuite, bddl, easydict, mujoco, etc.) from setup.py.
+# Pin robosuite==1.4.1 (fork uses single_arm_env removed in v1.5+), then install
+# the remaining deps from the clone. --no-build-isolation avoids rebuilding lerobot.
+RUN uv pip install --no-cache "robosuite==1.4.1" \
+    && cd /home/user_lerobot/libero-plus && uv pip install --no-cache -e "."
 ENV PYTHONPATH="/home/user_lerobot/libero-plus:${PYTHONPATH}"
 
 # Pre-download libero assets so nothing is fetched at runtime (CI timeout risk).
