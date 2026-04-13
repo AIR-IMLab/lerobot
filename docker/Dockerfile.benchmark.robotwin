@@ -77,9 +77,9 @@ COPY --chown=user_lerobot:user_lerobot setup.py pyproject.toml uv.lock README.md
 COPY --chown=user_lerobot:user_lerobot src/ src/
 
 # Install lerobot base only (no benchmark extras — RoboTwin is source-only).
-# uv sync --locked uses the pre-resolved lockfile and does not re-check
-# requires-python, so it works with Python 3.10 despite lerobot declaring >=3.12.
-RUN uv sync --locked --no-cache --python python${PYTHON_VERSION}
+# Use uv pip install (not uv sync) because uv sync enforces requires-python>=3.12
+# which rejects Python 3.10. pip-style install bypasses this check.
+RUN uv pip install --no-cache -e "."
 
 # ── 2. Install RoboTwin 2.0 simulator stack ────────────────────────────────
 # Clone at a pinned commit for reproducibility.
