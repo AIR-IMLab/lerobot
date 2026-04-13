@@ -49,7 +49,7 @@ ROBOMME_TASKS = [
 class RoboMMEGymEnv(gym.Env):
     """Thin Gymnasium wrapper around a single RoboMME episode env."""
 
-    metadata = {"render_modes": ["rgb_array"]}
+    metadata = {"render_modes": ["rgb_array"], "render_fps": 10}
 
     def __init__(
         self,
