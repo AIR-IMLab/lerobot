@@ -182,8 +182,9 @@ class DriftingPolicy(PreTrainedPolicy):
                 if self.config.n_obs_steps == 1 and batch[key].ndim == 4:
                     batch[key] = batch[key].unsqueeze(1)
             batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
-        loss = self.drifting.compute_loss(batch, reduction=reduction)
-        return loss, {}
+        loss, info = self.drifting.compute_loss(batch, reduction=reduction)
+        output_dict = {f"drift_{k}": float(v.detach()) for k, v in info.items()}
+        return loss, output_dict
 
 
 class DriftingModel(nn.Module):
@@ -257,7 +258,9 @@ class DriftingModel(nn.Module):
         end = start + self.config.n_action_steps
         return sample[:, start:end]
 
-    def compute_loss(self, batch: dict[str, Tensor], reduction: str = "mean") -> Tensor:
+    def compute_loss(
+        self, batch: dict[str, Tensor], reduction: str = "mean"
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
         assert set(batch).issuperset({OBS_STATE, ACTION, "action_is_pad"})
         assert OBS_IMAGES in batch or OBS_ENV_STATE in batch
         n_obs_steps = batch[OBS_STATE].shape[1]
@@ -282,19 +285,24 @@ class DriftingModel(nn.Module):
                 raise ValueError("`action_is_pad` required when do_mask_loss_for_padding=True")
             pad_mask = (~batch["action_is_pad"]).to(actions.dtype)  # [B, T]
 
+        info_out: dict[str, Tensor] = {}
         if self.config.per_timestep_loss:
             # Per-timestep mode: drift loss is computed independently at each step
             # and exactly zeroed at padded timesteps. Returns [B] when reduction="none"
             # by accumulating per-sample losses across valid timesteps.
             per_sample = actions.new_zeros(B)
+            acc_info: dict[str, Tensor] = {}
             for t in range(T):
                 gen_t = pred[:, :, t, :]                      # [B, G, D]
                 pos_t = actions[:, t, :].unsqueeze(1)         # [B, 1, D]
-                loss_t, _ = drift_loss(gen_t, pos_t, R_list=R_list)  # [B]
+                loss_t, info_t = drift_loss(gen_t, pos_t, R_list=R_list)  # [B]
                 if pad_mask is not None:
                     loss_t = loss_t * pad_mask[:, t]
                 per_sample = per_sample + loss_t
+                for k, v in info_t.items():
+                    acc_info[k] = acc_info.get(k, 0.0) + v / T
             per_sample = per_sample / T
+            info_out = acc_info
         else:
             # Flattened mode: drift loss operates on the whole [T*D] chunk, so it
             # cannot be exactly per-step masked. We approximate by weighting the
@@ -303,14 +311,14 @@ class DriftingModel(nn.Module):
             # does not implement padding masks at all.
             gen = pred.reshape(B, G, T * D)
             pos = actions.reshape(B, 1, T * D)
-            per_sample, _ = drift_loss(gen, pos, R_list=R_list)  # [B]
+            per_sample, info_out = drift_loss(gen, pos, R_list=R_list)  # [B]
             if pad_mask is not None:
                 per_sample = per_sample * pad_mask.mean(dim=1)
 
         if reduction == "none":
-            return per_sample
+            return per_sample, info_out
         if reduction == "mean":
-            return per_sample.mean()
+            return per_sample.mean(), info_out
         if reduction == "sum":
-            return per_sample.sum()
+            return per_sample.sum(), info_out
         raise ValueError(f"Unsupported reduction: {reduction}")
