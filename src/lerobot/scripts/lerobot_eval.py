@@ -95,6 +95,14 @@ from lerobot.utils.utils import (
 )
 
 
+def _synchronize_for_timing(action: PolicyAction) -> None:
+    """Synchronize the action device before stopping an eval timing measurement."""
+    if action.device.type == "cuda":
+        torch.cuda.synchronize(action.device)
+    elif action.device.type == "mps" and hasattr(torch, "mps") and torch.backends.mps.is_available():
+        torch.mps.synchronize()
+
+
 def rollout(
     env: gym.vector.VectorEnv,
     policy: PreTrainedPolicy,
@@ -152,6 +160,11 @@ def rollout(
     all_dones = []
 
     step = 0
+    total_inference_s = 0.0
+    num_inference_steps = 0
+    total_chunk_inference_s = 0.0
+    num_chunk_generation_steps = 0
+    num_chunk_classified_steps = 0
     # Keep track of which environments are done.
     done = np.array([False] * env.num_envs)
     max_steps = env.call("_max_episode_steps")[0]
@@ -182,8 +195,25 @@ def rollout(
         observation = env_preprocessor(observation)
 
         observation = preprocessor(observation)
+        get_eval_timing_context = getattr(policy, "get_eval_timing_context", None)
+        timing_context = get_eval_timing_context() if callable(get_eval_timing_context) else None
+        _t0 = time.perf_counter()
         with torch.inference_mode():
             action = policy.select_action(observation)
+        _synchronize_for_timing(action)
+        step_inference_s = time.perf_counter() - _t0
+        total_inference_s += step_inference_s
+        num_inference_steps += 1
+
+        is_chunk_generation_step = None
+        is_chunk_generation_step_fn = getattr(policy, "is_chunk_generation_step", None)
+        if callable(is_chunk_generation_step_fn):
+            is_chunk_generation_step = is_chunk_generation_step_fn(timing_context)
+        if is_chunk_generation_step is not None:
+            num_chunk_classified_steps += 1
+            if is_chunk_generation_step:
+                total_chunk_inference_s += step_inference_s
+                num_chunk_generation_steps += 1
         action = postprocessor(action)
 
         action_transition = {ACTION: action}
@@ -248,6 +278,13 @@ def rollout(
         "reward": torch.stack(all_rewards, dim=1),
         "success": torch.stack(all_successes, dim=1),
         "done": torch.stack(all_dones, dim=1),
+        "timing": {
+            "total_inference_s": total_inference_s,
+            "num_inference_steps": num_inference_steps,
+            "total_chunk_inference_s": total_chunk_inference_s,
+            "num_chunk_generation_steps": num_chunk_generation_steps,
+            "num_chunk_classified_steps": num_chunk_classified_steps,
+        },
     }
     if return_observations:
         stacked_observations = {}
@@ -315,6 +352,11 @@ def eval_policy(
     max_rewards = []
     all_successes = []
     all_seeds = []
+    total_inference_s = 0.0
+    num_inference_steps = 0
+    total_chunk_inference_s = 0.0
+    num_chunk_generation_steps = 0
+    num_chunk_classified_steps = 0
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
 
@@ -362,6 +404,12 @@ def eval_policy(
             return_observations=return_episode_data,
             render_callback=render_frame if max_episodes_rendered > 0 else None,
         )
+        rollout_timing = rollout_data["timing"]
+        total_inference_s += rollout_timing["total_inference_s"]
+        num_inference_steps += rollout_timing["num_inference_steps"]
+        total_chunk_inference_s += rollout_timing["total_chunk_inference_s"]
+        num_chunk_generation_steps += rollout_timing["num_chunk_generation_steps"]
+        num_chunk_classified_steps += rollout_timing["num_chunk_classified_steps"]
 
         # Figure out where in each rollout sequence the first done condition was encountered (results after
         # this won't be included).
@@ -454,12 +502,32 @@ def eval_policy(
                 )
             )
         ],
+        "timing": {
+            "total_inference_s": total_inference_s,
+            "num_inference_steps": num_inference_steps,
+            "total_chunk_inference_s": total_chunk_inference_s,
+            "num_chunk_generation_steps": num_chunk_generation_steps,
+            "num_chunk_classified_steps": num_chunk_classified_steps,
+        },
         "aggregated": {
             "avg_sum_reward": float(np.nanmean(sum_rewards[:n_episodes])),
             "avg_max_reward": float(np.nanmean(max_rewards[:n_episodes])),
             "pc_success": float(np.nanmean(all_successes[:n_episodes]) * 100),
             "eval_s": time.time() - start,
             "eval_ep_s": (time.time() - start) / n_episodes,
+            "avg_inference_s": (
+                total_inference_s / num_inference_steps if num_inference_steps else float("nan")
+            ),
+            "avg_chunk_inference_s": (
+                total_chunk_inference_s / num_chunk_generation_steps
+                if num_chunk_generation_steps
+                else float("nan")
+            ),
+            "pc_chunk_generation": (
+                num_chunk_generation_steps / num_chunk_classified_steps * 100
+                if num_chunk_classified_steps
+                else float("nan")
+            ),
         },
     }
 
@@ -600,9 +668,25 @@ class TaskMetrics(TypedDict):
     max_rewards: list[float]
     successes: list[bool]
     video_paths: list[str]
+    total_inference_s: float
+    num_inference_steps: int
+    total_chunk_inference_s: float
+    num_chunk_generation_steps: int
+    num_chunk_classified_steps: int
 
 
-ACC_KEYS = ("sum_rewards", "max_rewards", "successes", "video_paths")
+def _new_task_accumulator() -> dict[str, Any]:
+    return {
+        "sum_rewards": [],
+        "max_rewards": [],
+        "successes": [],
+        "video_paths": [],
+        "total_inference_s": 0.0,
+        "num_inference_steps": 0,
+        "total_chunk_inference_s": 0.0,
+        "num_chunk_generation_steps": 0,
+        "num_chunk_classified_steps": 0,
+    }
 
 
 def eval_one(
@@ -638,11 +722,17 @@ def eval_one(
     )
 
     per_episode = task_result["per_episode"]
+    timing = task_result["timing"]
     return TaskMetrics(
         sum_rewards=[ep["sum_reward"] for ep in per_episode],
         max_rewards=[ep["max_reward"] for ep in per_episode],
         successes=[ep["success"] for ep in per_episode],
         video_paths=task_result.get("video_paths", []),
+        total_inference_s=timing.get("total_inference_s", 0.0),
+        num_inference_steps=timing.get("num_inference_steps", 0),
+        total_chunk_inference_s=timing.get("total_chunk_inference_s", 0.0),
+        num_chunk_generation_steps=timing.get("num_chunk_generation_steps", 0),
+        num_chunk_classified_steps=timing.get("num_chunk_classified_steps", 0),
     )
 
 
@@ -720,15 +810,12 @@ def eval_policy_all(
     tasks = [(tg, tid, vec) for tg, group in envs.items() for tid, vec in group.items()]
 
     # accumulators: track metrics at both per-group level and across all groups
-    group_acc: dict[str, dict[str, list]] = defaultdict(lambda: {k: [] for k in ACC_KEYS})
-    overall: dict[str, list] = {k: [] for k in ACC_KEYS}
+    group_acc: dict[str, dict[str, Any]] = defaultdict(_new_task_accumulator)
+    overall: dict[str, Any] = _new_task_accumulator()
     per_task_infos: list[dict] = []
 
     # small inline helper to accumulate one task's metrics into accumulators
     def _accumulate_to(group: str, metrics: dict):
-        # metrics expected to contain 'sum_rewards', 'max_rewards', 'successes', optionally 'video_paths'
-        # but eval_one may store per-episode lists; we assume metrics uses scalars averaged per task as before.
-        # To be robust, accept scalars or lists.
         def _append(key, value):
             if value is None:
                 return
@@ -747,6 +834,15 @@ def eval_policy_all(
         if paths:
             group_acc[group]["video_paths"].extend(paths)
             overall["video_paths"].extend(paths)
+        for key in (
+            "total_inference_s",
+            "num_inference_steps",
+            "total_chunk_inference_s",
+            "num_chunk_generation_steps",
+            "num_chunk_classified_steps",
+        ):
+            group_acc[group][key] += metrics.get(key, 0)
+            overall[key] += metrics.get(key, 0)
 
     # Choose runner (sequential vs threaded)
     task_runner = partial(
@@ -805,6 +901,9 @@ def eval_policy_all(
         arr = np.array(xs, dtype=float)
         return float(np.nanmean(arr))
 
+    def _safe_div(total: float, count: int) -> float:
+        return float(total / count) if count else float("nan")
+
     # compute per-group aggregates
     groups_aggregated = {}
     for group, acc in group_acc.items():
@@ -814,6 +913,13 @@ def eval_policy_all(
             "pc_success": _agg_from_list(acc["successes"]) * 100 if acc["successes"] else float("nan"),
             "n_episodes": len(acc["sum_rewards"]),
             "video_paths": list(acc["video_paths"]),
+            "avg_inference_s": _safe_div(acc["total_inference_s"], acc["num_inference_steps"]),
+            "avg_chunk_inference_s": _safe_div(
+                acc["total_chunk_inference_s"], acc["num_chunk_generation_steps"]
+            ),
+            "pc_chunk_generation": _safe_div(
+                acc["num_chunk_generation_steps"] * 100, acc["num_chunk_classified_steps"]
+            ),
         }
 
     # overall aggregates
@@ -825,6 +931,13 @@ def eval_policy_all(
         "eval_s": time.time() - start_t,
         "eval_ep_s": (time.time() - start_t) / max(1, len(overall["sum_rewards"])),
         "video_paths": list(overall["video_paths"]),
+        "avg_inference_s": _safe_div(overall["total_inference_s"], overall["num_inference_steps"]),
+        "avg_chunk_inference_s": _safe_div(
+            overall["total_chunk_inference_s"], overall["num_chunk_generation_steps"]
+        ),
+        "pc_chunk_generation": _safe_div(
+            overall["num_chunk_generation_steps"] * 100, overall["num_chunk_classified_steps"]
+        ),
     }
 
     return {

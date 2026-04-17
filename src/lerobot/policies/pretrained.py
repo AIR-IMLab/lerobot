@@ -31,6 +31,7 @@ from torch import Tensor, nn
 
 from lerobot.configs import PreTrainedConfig
 from lerobot.configs.train import TrainPipelineConfig
+from lerobot.utils.constants import ACTION
 from lerobot.utils.hub import HubMixin
 
 from .utils import log_model_loading_keys
@@ -244,6 +245,38 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
             )
 
             logging.info(f"Model pushed to {commit_info.repo_url.url}")
+
+    def get_eval_timing_context(self) -> dict[str, int] | None:
+        """Return lightweight pre-`select_action` state for eval-time latency profiling.
+
+        The default implementation detects the most common action-queue layouts used by LeRobot
+        policies. Policies with custom caching can override this to expose a different context.
+        Returning `None` means chunk-generation timing is unavailable for that policy, while the
+        generic per-step `avg_inference_s` metric will still be recorded.
+        """
+        queues = getattr(self, "_queues", None)
+        if queues is not None and ACTION in queues:
+            return {"action_queue_len": len(queues[ACTION])}
+
+        action_queue = getattr(self, "_action_queue", None)
+        if action_queue is not None:
+            return {"action_queue_len": len(action_queue)}
+
+        return None
+
+    def is_chunk_generation_step(self, timing_context: dict[str, int] | None) -> bool | None:
+        """Return whether the upcoming `select_action` call will generate a fresh action chunk.
+
+        Returning `None` indicates that the policy does not expose chunk-generation timing.
+        """
+        if timing_context is None:
+            return None
+
+        queue_len = timing_context.get("action_queue_len")
+        if queue_len is None:
+            return None
+
+        return queue_len == 0
 
     def generate_model_card(
         self, dataset_repo_id: str, model_type: str, license: str | None, tags: list[str] | None

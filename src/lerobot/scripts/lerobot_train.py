@@ -526,6 +526,9 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                     "avg_sum_reward": AverageMeter("∑rwrd", ":.3f"),
                     "pc_success": AverageMeter("success", ":.1f"),
                     "eval_s": AverageMeter("eval_s", ":.3f"),
+                    "avg_inference_s": AverageMeter("infer_s", ":.4f"),
+                    "avg_chunk_inference_s": AverageMeter("chunk_s", ":.4f"),
+                    "pc_chunk_generation": AverageMeter("chunk%", ":.1f"),
                 }
                 eval_tracker = MetricsTracker(
                     cfg.batch_size,
@@ -538,6 +541,9 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                 eval_tracker.eval_s = aggregated.pop("eval_s")
                 eval_tracker.avg_sum_reward = aggregated.pop("avg_sum_reward")
                 eval_tracker.pc_success = aggregated.pop("pc_success")
+                eval_tracker.avg_inference_s = aggregated.pop("avg_inference_s", float("nan"))
+                eval_tracker.avg_chunk_inference_s = aggregated.pop("avg_chunk_inference_s", float("nan"))
+                eval_tracker.pc_chunk_generation = aggregated.pop("pc_chunk_generation", float("nan"))
                 if wandb_logger:
                     wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
                     wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
