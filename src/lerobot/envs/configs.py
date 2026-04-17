@@ -43,6 +43,7 @@ from lerobot.utils.constants import (
     OBS_IMAGES,
     OBS_STATE,
 )
+from lerobot.utils.import_utils import require_package
 
 
 def _make_vec_env_cls(use_async: bool, n_envs: int):
@@ -232,6 +233,17 @@ class PushtEnv(EnvConfig):
             "visualization_height": self.visualization_height,
             "max_episode_steps": self.episode_length,
         }
+
+    def create_envs(
+        self,
+        n_envs: int,
+        use_async_envs: bool = False,
+    ) -> dict[str, dict[int, gym.vector.VectorEnv]]:
+        # gym-pusht registers its environments on import, so make that import explicit here
+        # instead of relying on a previous process to have already imported it.
+        require_package("gym-pusht", extra="pusht", import_name="gym_pusht")
+        importlib.import_module("gym_pusht")
+        return super().create_envs(n_envs=n_envs, use_async_envs=use_async_envs)
 
 
 @dataclass
