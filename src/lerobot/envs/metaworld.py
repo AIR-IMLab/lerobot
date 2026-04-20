@@ -27,6 +27,7 @@ from gymnasium import spaces
 
 from lerobot.types import RobotObservation
 
+from .configs import _SafeEnvAttrAccessWrapper
 from .utils import _LazyAsyncVectorEnv
 
 # ---- Load configuration data from the external JSON file ----
@@ -321,16 +322,22 @@ def create_metaworld_envs(
             print(f"Building vec env | group={group} | task_id={tid} | task={task_name}")
 
             # build n_envs factories
-            fns = [(lambda tn=task_name: MetaworldEnv(task=tn, **gym_kwargs)) for _ in range(n_envs)]
+            fns = [
+                (lambda tn=task_name: _SafeEnvAttrAccessWrapper(MetaworldEnv(task=tn, **gym_kwargs)))
+                for _ in range(n_envs)
+            ]
 
             if is_async:
                 lazy = _LazyAsyncVectorEnv(fns, cached_obs_space, cached_act_space)
+                lazy._lerobot_safe_attr_access = True
                 if cached_obs_space is None:
                     cached_obs_space = lazy.observation_space
                     cached_act_space = lazy.action_space
                 out[group][tid] = lazy
             else:
-                out[group][tid] = env_cls(fns)
+                vec = env_cls(fns)
+                setattr(vec, "_lerobot_safe_attr_access", True)
+                out[group][tid] = vec
 
     # return a plain dict for consistency
     return {group: dict(task_map) for group, task_map in out.items()}

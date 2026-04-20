@@ -31,7 +31,7 @@ from lerobot.configs import FeatureType, PolicyFeature
 from lerobot.utils.constants import OBS_ENV_STATE, OBS_IMAGE, OBS_IMAGES, OBS_STATE, OBS_STR
 from lerobot.utils.utils import get_channel_first_image_shape
 
-from .configs import EnvConfig
+from .configs import EnvConfig, _SafeEnvAttrAccessWrapper, _get_async_vector_env_kwargs
 
 
 def _convert_nested_dict(d):
@@ -131,11 +131,37 @@ def env_to_policy_features(env_cfg: EnvConfig) -> dict[str, PolicyFeature]:
 
 
 def _sub_env_has_attr(env: gym.vector.VectorEnv, attr: str) -> bool:
-    try:
-        env.get_attr(attr)
-        return True
-    except (AttributeError, Exception):
-        return False
+    marker = object()
+    values = safe_vector_env_get_attr(env, attr, marker)
+    return all(value is not marker for value in values)
+
+
+def safe_vector_env_get_attr(
+    env: gym.vector.VectorEnv, attr: str, default: Any = None
+) -> list[Any]:
+    """Get one attribute value per sub-env without crashing async workers.
+
+    AsyncVectorEnv treats missing attributes as worker exceptions and permanently
+    disables the corresponding pipes. To keep eval compatible with environments
+    that simply do not expose optional metadata like `task_description`, all
+    built-in env factories wrap sub-envs with `_SafeEnvAttrAccessWrapper` and
+    advertise that capability on the vector env via `_lerobot_safe_attr_access`.
+    For other envs we only do best-effort direct inspection on SyncVectorEnv and
+    otherwise fall back to the provided default.
+    """
+
+    if getattr(env, "_lerobot_safe_attr_access", False) and hasattr(env, "call"):
+        values = env.call("lerobot_get_attr", attr, default)
+        return list(values)
+
+    if isinstance(env, gym.vector.SyncVectorEnv):
+        values = []
+        for sub_env in env.envs:
+            wrapped = _SafeEnvAttrAccessWrapper(sub_env)
+            values.append(wrapped.lerobot_get_attr(attr, default))
+        return values
+
+    return [default] * env.num_envs
 
 
 class _LazyAsyncVectorEnv:
@@ -170,7 +196,10 @@ class _LazyAsyncVectorEnv:
 
     def _ensure(self) -> None:
         if self._env is None:
-            self._env = gym.vector.AsyncVectorEnv(self._env_fns, context="forkserver", shared_memory=True)
+            self._env = gym.vector.AsyncVectorEnv(
+                self._env_fns, shared_memory=True, **_get_async_vector_env_kwargs()
+            )
+            setattr(self._env, "_lerobot_safe_attr_access", getattr(self, "_lerobot_safe_attr_access", False))
 
     def reset(self, **kwargs):
         self._ensure()

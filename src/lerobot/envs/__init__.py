@@ -20,7 +20,13 @@
 
 from .configs import AlohaEnv, EnvConfig, HILSerlRobotEnvConfig, HubEnvConfig, PushtEnv
 from .factory import make_env, make_env_config, make_env_pre_post_processors
-from .utils import check_env_attributes_and_types, close_envs, env_to_policy_features, preprocess_observation
+from .utils import (
+    check_env_attributes_and_types,
+    close_envs,
+    env_to_policy_features,
+    preprocess_observation,
+    safe_vector_env_get_attr,
+)
 
 __all__ = [
     "AlohaEnv",
@@ -35,4 +41,5 @@ __all__ = [
     "make_env_config",
     "make_env_pre_post_processors",
     "preprocess_observation",
+    "safe_vector_env_get_attr",
 ]

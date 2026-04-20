@@ -80,6 +80,7 @@ from lerobot.envs import (
     make_env,
     make_env_pre_post_processors,
     preprocess_observation,
+    safe_vector_env_get_attr,
 )
 from lerobot.policies import PreTrainedPolicy, make_policy, make_pre_post_processors
 from lerobot.processor import PolicyProcessorPipeline
@@ -182,14 +183,12 @@ def rollout(
             all_observations.append(deepcopy(observation))
 
         # Infer "task" from sub-environments (prefer natural language description).
-        # env.call() works with both SyncVectorEnv and AsyncVectorEnv.
-        try:
-            observation["task"] = list(env.call("task_description"))
-        except (AttributeError, NotImplementedError):
-            try:
-                observation["task"] = list(env.call("task"))
-            except (AttributeError, NotImplementedError):
-                observation["task"] = [""] * env.num_envs
+        task_descriptions = safe_vector_env_get_attr(env, "task_description", "")
+        if any(task_descriptions):
+            observation["task"] = [str(task_desc) for task_desc in task_descriptions]
+        else:
+            tasks = safe_vector_env_get_attr(env, "task", "")
+            observation["task"] = [str(task) for task in tasks]
 
         # Apply environment-specific preprocessing (e.g., LiberoProcessorStep for LIBERO)
         observation = env_preprocessor(observation)

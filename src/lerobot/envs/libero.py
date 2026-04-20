@@ -31,6 +31,7 @@ from libero.libero.envs import OffScreenRenderEnv
 
 from lerobot.types import RobotObservation
 
+from .configs import _SafeEnvAttrAccessWrapper
 from .utils import _LazyAsyncVectorEnv
 
 
@@ -385,18 +386,20 @@ def _make_env_fns(
 
     def _make_env(episode_index: int, **kwargs) -> LiberoEnv:
         local_kwargs = dict(kwargs)
-        return LiberoEnv(
-            task_suite=suite,
-            task_id=task_id,
-            task_suite_name=suite_name,
-            camera_name=camera_names,
-            init_states=init_states,
-            episode_length=episode_length,
-            episode_index=episode_index,
-            n_envs=n_envs,
-            control_mode=control_mode,
-            camera_name_mapping=camera_name_mapping,
-            **local_kwargs,
+        return _SafeEnvAttrAccessWrapper(
+            LiberoEnv(
+                task_suite=suite,
+                task_id=task_id,
+                task_suite_name=suite_name,
+                camera_name=camera_names,
+                init_states=init_states,
+                episode_length=episode_length,
+                episode_index=episode_index,
+                n_envs=n_envs,
+                control_mode=control_mode,
+                camera_name_mapping=camera_name_mapping,
+                **local_kwargs,
+            )
         )
 
     fns: list[Callable[[], LiberoEnv]] = []
@@ -478,12 +481,15 @@ def create_libero_envs(
             )
             if is_async:
                 lazy = _LazyAsyncVectorEnv(fns, cached_obs_space, cached_act_space)
+                lazy._lerobot_safe_attr_access = True
                 if cached_obs_space is None:
                     cached_obs_space = lazy.observation_space
                     cached_act_space = lazy.action_space
                 out[suite_name][tid] = lazy
             else:
-                out[suite_name][tid] = env_cls(fns)
+                vec = env_cls(fns)
+                setattr(vec, "_lerobot_safe_attr_access", True)
+                out[suite_name][tid] = vec
             print(f"Built vec env | suite={suite_name} | task_id={tid} | n_envs={n_envs}")
 
     return {suite: dict(task_map) for suite, task_map in out.items()}

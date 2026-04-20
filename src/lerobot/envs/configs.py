@@ -69,6 +69,20 @@ def _get_async_vector_env_kwargs() -> dict[str, str]:
     return {"context": "forkserver"}
 
 
+class _SafeEnvAttrAccessWrapper(gym.Wrapper):
+    """Expose attribute access helpers that won't crash AsyncVectorEnv workers."""
+
+    def lerobot_get_attr(self, name: str, default: Any = None) -> Any:
+        try:
+            return self.get_wrapper_attr(name)
+        except AttributeError:
+            return default
+
+    def lerobot_has_attr(self, name: str) -> bool:
+        marker = object()
+        return self.lerobot_get_attr(name, marker) is not marker
+
+
 @dataclass
 class EnvConfig(draccus.ChoiceRegistry, abc.ABC):
     task: str | None = None
@@ -134,7 +148,8 @@ class EnvConfig(draccus.ChoiceRegistry, abc.ABC):
             # AsyncVectorEnv workers start in fresh processes; repeat the registration
             # check here so import-on-register gym packages are available in each worker.
             self._ensure_gym_env_registered()
-            return gym.make(self.gym_id, disable_env_checker=self.disable_env_checker, **self.gym_kwargs)
+            env = gym.make(self.gym_id, disable_env_checker=self.disable_env_checker, **self.gym_kwargs)
+            return _SafeEnvAttrAccessWrapper(env)
 
         extra_kwargs: dict = {}
         if env_cls is gym.vector.AsyncVectorEnv:
@@ -147,6 +162,7 @@ class EnvConfig(draccus.ChoiceRegistry, abc.ABC):
             )
         except ImportError:
             vec = env_cls([_make_one for _ in range(n_envs)], **extra_kwargs)
+        setattr(vec, "_lerobot_safe_attr_access", True)
         return {self.type: {0: vec}}
 
     def get_env_processors(self):
