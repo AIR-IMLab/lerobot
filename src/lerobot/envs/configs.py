@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import abc
 import importlib
+import sys
 from dataclasses import dataclass, field, fields
 from typing import Any
 
@@ -53,6 +54,21 @@ def _make_vec_env_cls(use_async: bool, n_envs: int):
     return gym.vector.SyncVectorEnv
 
 
+def _get_async_vector_env_kwargs() -> dict[str, str]:
+    """Pick a multiprocessing context that works across platforms.
+
+    `forkserver` is a good default on Linux because it avoids inheriting a large
+    parent process into every worker. On macOS, however, it can fail early with
+    `PermissionError: [Errno 1] Operation not permitted` when the forkserver
+    listener socket cannot be created. Falling back to `spawn` keeps workers in
+    fresh processes while remaining compatible with env packages that register
+    themselves on import.
+    """
+    if sys.platform == "darwin":
+        return {"context": "spawn"}
+    return {"context": "forkserver"}
+
+
 @dataclass
 class EnvConfig(draccus.ChoiceRegistry, abc.ABC):
     task: str | None = None
@@ -81,6 +97,25 @@ class EnvConfig(draccus.ChoiceRegistry, abc.ABC):
     def gym_kwargs(self) -> dict:
         raise NotImplementedError()
 
+    def _ensure_gym_env_registered(self) -> None:
+        """Ensure the gym namespace backing this env is registered in the current process."""
+        if self.gym_id in gym_registry:
+            return
+
+        print(f"gym id '{self.gym_id}' not found, attempting to import '{self.package_name}'...")
+        try:
+            importlib.import_module(self.package_name)
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                f"Package '{self.package_name}' required for env '{self.type}' not found. "
+                f"Please install it or check PYTHONPATH."
+            ) from e
+
+        if self.gym_id not in gym_registry:
+            raise gym.error.NameNotFound(
+                f"Environment '{self.gym_id}' not registered even after importing '{self.package_name}'."
+            )
+
     def create_envs(
         self,
         n_envs: int,
@@ -93,27 +128,17 @@ class EnvConfig(draccus.ChoiceRegistry, abc.ABC):
         """
         env_cls = gym.vector.AsyncVectorEnv if (use_async_envs and n_envs > 1) else gym.vector.SyncVectorEnv
 
-        if self.gym_id not in gym_registry:
-            print(f"gym id '{self.gym_id}' not found, attempting to import '{self.package_name}'...")
-            try:
-                importlib.import_module(self.package_name)
-            except ModuleNotFoundError as e:
-                raise ModuleNotFoundError(
-                    f"Package '{self.package_name}' required for env '{self.type}' not found. "
-                    f"Please install it or check PYTHONPATH."
-                ) from e
-
-            if self.gym_id not in gym_registry:
-                raise gym.error.NameNotFound(
-                    f"Environment '{self.gym_id}' not registered even after importing '{self.package_name}'."
-                )
+        self._ensure_gym_env_registered()
 
         def _make_one():
+            # AsyncVectorEnv workers start in fresh processes; repeat the registration
+            # check here so import-on-register gym packages are available in each worker.
+            self._ensure_gym_env_registered()
             return gym.make(self.gym_id, disable_env_checker=self.disable_env_checker, **self.gym_kwargs)
 
         extra_kwargs: dict = {}
         if env_cls is gym.vector.AsyncVectorEnv:
-            extra_kwargs["context"] = "forkserver"
+            extra_kwargs.update(_get_async_vector_env_kwargs())
         try:
             from gymnasium.vector import AutoresetMode
 
