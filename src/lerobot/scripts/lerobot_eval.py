@@ -674,6 +674,17 @@ class TaskMetrics(TypedDict):
     num_chunk_classified_steps: int
 
 
+def _can_reopen_after_close(env: Any) -> bool:
+    """Whether an env wrapper can be safely closed between eval passes and recreated later.
+
+    Plain Gymnasium VectorEnvs become permanently unusable after `close()`. Our lazy
+    multi-task wrappers, however, intentionally expose `_ensure()` and recreate their
+    inner AsyncVectorEnv on demand after `close()` resets them back to an unopened state.
+    """
+
+    return callable(getattr(env, "_ensure", None))
+
+
 def _new_task_accumulator() -> dict[str, Any]:
     return {
         "sum_rewards": [],
@@ -870,12 +881,13 @@ def eval_policy_all(
                 _accumulate_to(tg, metrics)
                 per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
             finally:
-                env.close()
+                if _can_reopen_after_close(env):
+                    env.close()
                 # Prefetch next task's workers *after* closing current env to prevent
                 # GPU memory overlap between consecutive tasks.
                 if i + 1 < len(tasks):
                     next_env = tasks[i + 1][2]
-                    if hasattr(next_env, "_ensure"):
+                    if _can_reopen_after_close(next_env):
                         prefetch_thread = threading.Thread(target=next_env._ensure, daemon=True)
                         prefetch_thread.start()
     else:
@@ -891,7 +903,8 @@ def eval_policy_all(
                     _accumulate_to(tg, metrics)
                     per_task_infos.append({"task_group": tg, "task_id": tid, "metrics": metrics})
                 finally:
-                    env.close()
+                    if _can_reopen_after_close(env):
+                        env.close()
 
     # compute aggregated metrics helper (robust to lists/scalars)
     def _agg_from_list(xs):
