@@ -148,22 +148,41 @@ class DriftingPolicy(PreTrainedPolicy):
         if self.config.env_state_feature:
             self._queues[OBS_ENV_STATE] = deque(maxlen=self.config.n_obs_steps)
 
+    def _prepare_batch_for_queue(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Normalize an incoming observation batch so it can feed the obs queues.
+
+        - Shallow-copies so callers aren't mutated.
+        - Drops ACTION if present (offline eval batches include it).
+        - Stacks per-camera image keys into OBS_IMAGES along a new camera dim.
+        """
+        batch = dict(batch)
+        batch.pop(ACTION, None)
+        if self.config.image_features:
+            batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
+        return batch
+
+    def _stack_from_queues(self) -> dict[str, Tensor]:
+        return {k: torch.stack(list(self._queues[k]), dim=1) for k in self._queues if k != ACTION}
+
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
-        batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
-        return self.drifting.generate_actions(batch, noise=noise)
+        """Self-contained action-chunk prediction.
+
+        Accepts a cold batch (no prior `select_action` call required): stacks the
+        camera keys, populates the observation queues, then runs single-step
+        generation. Safe to call from the async PolicyServer path.
+        """
+        batch = self._prepare_batch_for_queue(batch)
+        self._queues = populate_queues(self._queues, batch, exclude_keys=[ACTION])
+        return self.drifting.generate_actions(self._stack_from_queues(), noise=noise)
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
-        if ACTION in batch:
-            batch.pop(ACTION)
-        if self.config.image_features:
-            batch = dict(batch)
-            batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
-        self._queues = populate_queues(self._queues, batch)
+        batch = self._prepare_batch_for_queue(batch)
+        self._queues = populate_queues(self._queues, batch, exclude_keys=[ACTION])
 
         if len(self._queues[ACTION]) == 0:
-            actions = self.predict_action_chunk(batch, noise=noise)
+            actions = self.drifting.generate_actions(self._stack_from_queues(), noise=noise)
             self._queues[ACTION].extend(actions.transpose(0, 1))
 
         return self._queues[ACTION].popleft()

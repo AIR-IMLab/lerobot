@@ -14,6 +14,7 @@
 
 from .act.configuration_act import ACTConfig as ACTConfig
 from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
+from .drifting.configuration_drifting import DriftingConfig as DriftingConfig
 from .factory import get_policy_class, make_policy, make_policy_config, make_pre_post_processors
 from .groot.configuration_groot import GrootConfig as GrootConfig
 from .multi_task_dit.configuration_multi_task_dit import MultiTaskDiTConfig as MultiTaskDiTConfig
@@ -40,6 +41,7 @@ __all__ = [
     # Configuration classes
     "ACTConfig",
     "DiffusionConfig",
+    "DriftingConfig",
     "GrootConfig",
     "MultiTaskDiTConfig",
     "PI0Config",

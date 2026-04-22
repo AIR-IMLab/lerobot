@@ -15,16 +15,19 @@
 """
 Async inference server/client.
 
-Requires: ``pip install 'lerobot[async]'``
+Server/client modules require: ``pip install 'lerobot[async]'``
+
+The gRPC gate is enforced inside :mod:`lerobot.async_inference.policy_server` and
+:mod:`lerobot.async_inference.robot_client` (the only modules that actually
+import ``grpc``). Lightweight utilities in this package — ``constants``,
+``configs``, ``helpers``, ``local_planner`` — can be imported without the
+``async`` extra installed.
 
 Available modules (import directly)::
 
     from lerobot.async_inference.policy_server import ...
     from lerobot.async_inference.robot_client import ...
+    from lerobot.async_inference.local_planner import LocalAsyncPlanner
 """
-
-from lerobot.utils.import_utils import require_package
-
-require_package("grpcio", extra="async", import_name="grpc")
 
 __all__: list[str] = []

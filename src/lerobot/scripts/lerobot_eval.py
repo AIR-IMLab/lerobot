@@ -114,6 +114,7 @@ def rollout(
     seeds: list[int] | None = None,
     return_observations: bool = False,
     render_callback: Callable[[gym.vector.VectorEnv], None] | None = None,
+    action_source: Any = None,
 ) -> dict:
     """Run a batched policy rollout once through a batch of environments.
 
@@ -148,8 +149,14 @@ def rollout(
     """
     assert isinstance(policy, nn.Module), "Policy must be a PyTorch nn module."
 
+    # `action_source` defaults to the raw policy. A LocalAsyncPlanner (or any
+    # object exposing `select_action` / `reset` / optional timing hooks) can be
+    # passed in to exercise an async-style action queue without a gRPC server.
+    if action_source is None:
+        action_source = policy
+
     # Reset the policy and environments.
-    policy.reset()
+    action_source.reset()
     observation, info = env.reset(seed=seeds)
     if render_callback is not None:
         render_callback(env)
@@ -194,18 +201,18 @@ def rollout(
         observation = env_preprocessor(observation)
 
         observation = preprocessor(observation)
-        get_eval_timing_context = getattr(policy, "get_eval_timing_context", None)
+        get_eval_timing_context = getattr(action_source, "get_eval_timing_context", None)
         timing_context = get_eval_timing_context() if callable(get_eval_timing_context) else None
         _t0 = time.perf_counter()
         with torch.inference_mode():
-            action = policy.select_action(observation)
+            action = action_source.select_action(observation)
         _synchronize_for_timing(action)
         step_inference_s = time.perf_counter() - _t0
         total_inference_s += step_inference_s
         num_inference_steps += 1
 
         is_chunk_generation_step = None
-        is_chunk_generation_step_fn = getattr(policy, "is_chunk_generation_step", None)
+        is_chunk_generation_step_fn = getattr(action_source, "is_chunk_generation_step", None)
         if callable(is_chunk_generation_step_fn):
             is_chunk_generation_step = is_chunk_generation_step_fn(timing_context)
         if is_chunk_generation_step is not None:
@@ -285,6 +292,9 @@ def rollout(
             "num_chunk_classified_steps": num_chunk_classified_steps,
         },
     }
+    async_metrics = getattr(action_source, "metrics", None)
+    if async_metrics is not None and hasattr(async_metrics, "as_dict"):
+        ret["async_metrics"] = async_metrics.as_dict()
     if return_observations:
         stacked_observations = {}
         for key in all_observations[0]:

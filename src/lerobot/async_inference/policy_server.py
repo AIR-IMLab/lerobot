@@ -34,6 +34,10 @@ from pprint import pformat
 from queue import Empty, Queue
 from typing import Any
 
+from lerobot.utils.import_utils import require_package
+
+require_package("grpcio", extra="async", import_name="grpc")
+
 import draccus
 import grpc
 import torch
