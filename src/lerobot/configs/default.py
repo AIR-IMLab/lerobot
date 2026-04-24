@@ -70,12 +70,50 @@ class EvalConfig:
     # `use_async_envs` specifies whether to use asynchronous environments (multiprocessing).
     # Defaults to True; automatically downgraded to SyncVectorEnv when batch_size=1.
     use_async_envs: bool = True
+    # Async policy evaluation mode. "none" calls policy.select_action directly.
+    # "local" uses the action queue on the caller thread; "background" runs chunk prediction on a worker thread.
+    async_policy: str = "none"
+    # Number of actions to keep from each predicted chunk. Set to 0 to infer from policy.config.n_action_steps.
+    async_actions_per_chunk: int = 0
+    async_chunk_size_threshold: float = 0.5
+    async_aggregate_fn_name: str = "latest_only"
+    async_bootstrap_timeout_s: float = 120.0
 
     def __post_init__(self) -> None:
         if self.batch_size == 0:
             self.batch_size = self._auto_batch_size()
         if self.batch_size > self.n_episodes:
             self.batch_size = self.n_episodes
+        self.async_policy = self._normalize_async_policy(self.async_policy)
+        if self.async_actions_per_chunk < 0:
+            raise ValueError(
+                f"async_actions_per_chunk must be non-negative, got {self.async_actions_per_chunk}"
+            )
+        if not 0.0 <= self.async_chunk_size_threshold <= 1.0:
+            raise ValueError(
+                "async_chunk_size_threshold must be in [0, 1], "
+                f"got {self.async_chunk_size_threshold}"
+            )
+        if self.async_bootstrap_timeout_s <= 0:
+            raise ValueError(
+                f"async_bootstrap_timeout_s must be positive, got {self.async_bootstrap_timeout_s}"
+            )
+
+    def _normalize_async_policy(self, mode: str) -> str:
+        normalized = mode.lower().replace("-", "_")
+        aliases = {
+            "": "none",
+            "off": "none",
+            "false": "none",
+            "sync": "none",
+            "backgroundasync": "background",
+            "background_async": "background",
+        }
+        normalized = aliases.get(normalized, normalized)
+        valid_modes = {"none", "local", "background"}
+        if normalized not in valid_modes:
+            raise ValueError(f"async_policy must be one of {sorted(valid_modes)}, got {mode!r}")
+        return normalized
 
     def _auto_batch_size(self) -> int:
         """Pick batch_size based on CPU cores, capped by n_episodes."""

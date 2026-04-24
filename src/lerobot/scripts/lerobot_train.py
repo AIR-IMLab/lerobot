@@ -58,7 +58,7 @@ from lerobot.utils.utils import (
     inside_slurm,
 )
 
-from .lerobot_eval import eval_policy_all
+from .lerobot_eval import eval_policy_all, make_async_eval_action_source_factory
 
 
 def update_policy(
@@ -349,6 +349,15 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
 
     if is_main_process:
         logging.info(colored("Output dir:", "yellow", attrs=["bold"]) + f" {cfg.output_dir}")
+        action_source_factory = make_async_eval_action_source_factory(cfg.eval)
+        if action_source_factory is not None:
+            logging.info(
+                "Using %s async policy eval (actions_per_chunk=%s, threshold=%s, aggregate=%s).",
+                cfg.eval.async_policy,
+                cfg.eval.async_actions_per_chunk or "auto",
+                cfg.eval.async_chunk_size_threshold,
+                cfg.eval.async_aggregate_fn_name,
+            )
         if cfg.env is not None:
             logging.info(f"{cfg.env.task=}")
             logging.info("Creating environment processors")
@@ -513,6 +522,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                         max_episodes_rendered=4,
                         start_seed=cfg.seed,
                         max_parallel_tasks=cfg.env.max_parallel_tasks,
+                        action_source_factory=action_source_factory,
                     )
                 # overall metrics (suite-agnostic)
                 aggregated = eval_info["overall"]

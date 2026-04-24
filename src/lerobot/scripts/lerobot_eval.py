@@ -73,6 +73,7 @@ from torch import Tensor, nn
 from tqdm import trange
 
 from lerobot.configs import parser
+from lerobot.configs.default import EvalConfig
 from lerobot.configs.eval import EvalPipelineConfig
 from lerobot.envs import (
     check_env_attributes_and_types,
@@ -102,6 +103,68 @@ def _synchronize_for_timing(action: PolicyAction) -> None:
         torch.cuda.synchronize(action.device)
     elif action.device.type == "mps" and hasattr(torch, "mps") and torch.backends.mps.is_available():
         torch.mps.synchronize()
+
+
+ActionSourceFactory = Callable[[PreTrainedPolicy], Any]
+
+
+def _resolve_async_actions_per_chunk(policy: PreTrainedPolicy, configured: int) -> int:
+    if configured > 0:
+        return configured
+
+    policy_config = getattr(policy, "config", None)
+    for attr in ("n_action_steps", "actions_per_chunk", "chunk_size"):
+        value = getattr(policy_config, attr, None)
+        if isinstance(value, int) and value > 0:
+            return value
+
+    raise ValueError(
+        "Could not infer async_actions_per_chunk from policy.config. "
+        "Set it explicitly with `--eval.async_actions_per_chunk=<N>`."
+    )
+
+
+def make_async_eval_action_source_factory(eval_cfg: EvalConfig) -> ActionSourceFactory | None:
+    """Build a factory for local async-style policy evaluation, or None for normal eval."""
+    if eval_cfg.async_policy == "none":
+        return None
+
+    def factory(policy: PreTrainedPolicy) -> Any:
+        if not callable(getattr(policy, "predict_action_chunk", None)):
+            raise ValueError(
+                f"Policy {type(policy).__name__} does not expose predict_action_chunk, "
+                "which is required for async policy eval."
+            )
+
+        from lerobot.async_inference.configs import get_aggregate_function
+        from lerobot.async_inference.local_planner import BackgroundAsyncPlanner, LocalAsyncPlanner
+
+        planner_kwargs = {
+            "policy": policy,
+            "actions_per_chunk": _resolve_async_actions_per_chunk(
+                policy, eval_cfg.async_actions_per_chunk
+            ),
+            "chunk_size_threshold": eval_cfg.async_chunk_size_threshold,
+            "aggregate_fn": get_aggregate_function(eval_cfg.async_aggregate_fn_name),
+        }
+        if eval_cfg.async_policy == "local":
+            return LocalAsyncPlanner(**planner_kwargs)
+        if eval_cfg.async_policy == "background":
+            return BackgroundAsyncPlanner(
+                **planner_kwargs,
+                bootstrap_timeout_s=eval_cfg.async_bootstrap_timeout_s,
+            )
+        raise ValueError(f"Unsupported async_policy={eval_cfg.async_policy!r}")
+
+    return factory
+
+
+def _async_metrics_from_raw(raw: dict[str, float]) -> dict[str, float]:
+    if not raw:
+        return {}
+    from lerobot.async_inference.local_planner import PlannerMetrics
+
+    return PlannerMetrics.from_raw_dict(raw).as_dict()
 
 
 def rollout(
@@ -295,6 +358,8 @@ def rollout(
     async_metrics = getattr(action_source, "metrics", None)
     if async_metrics is not None and hasattr(async_metrics, "as_dict"):
         ret["async_metrics"] = async_metrics.as_dict()
+        if hasattr(async_metrics, "raw_dict"):
+            ret["async_metrics_raw"] = async_metrics.raw_dict()
     if return_observations:
         stacked_observations = {}
         for key in all_observations[0]:
@@ -319,6 +384,7 @@ def eval_policy(
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
+    action_source_factory: ActionSourceFactory | None = None,
 ) -> dict:
     """
     Args:
@@ -351,6 +417,7 @@ def eval_policy(
 
     start = time.time()
     policy.eval()
+    action_source = action_source_factory(policy) if action_source_factory is not None else None
 
     # Determine how many batched rollouts we need to get n_episodes. Note that if n_episodes is not evenly
     # divisible by env.num_envs we end up discarding some data in the last batch.
@@ -366,6 +433,7 @@ def eval_policy(
     total_chunk_inference_s = 0.0
     num_chunk_generation_steps = 0
     num_chunk_classified_steps = 0
+    async_metrics_raw: dict[str, float] = defaultdict(float)
     threads = []  # for video saving threads
     n_episodes_rendered = 0  # for saving the correct number of videos
 
@@ -388,104 +456,117 @@ def eval_policy(
     if return_episode_data:
         episode_data: dict | None = None
 
-    # we dont want progress bar when we use slurm, since it clutters the logs
-    progbar = trange(n_batches, desc="Stepping through eval batches", disable=inside_slurm())
-    for batch_ix in progbar:
-        # Cache frames for rendering videos. Each item will be (b, h, w, c), and the list indexes the rollout
-        # step.
-        if max_episodes_rendered > 0:
-            ep_frames: list[np.ndarray] = []
+    try:
+        # we dont want progress bar when we use slurm, since it clutters the logs
+        progbar = trange(n_batches, desc="Stepping through eval batches", disable=inside_slurm())
+        for batch_ix in progbar:
+            # Cache frames for rendering videos. Each item will be (b, h, w, c), and the list indexes the
+            # rollout step.
+            if max_episodes_rendered > 0:
+                ep_frames: list[np.ndarray] = []
 
-        if start_seed is None:
-            seeds = None
-        else:
-            seeds = range(
-                start_seed + (batch_ix * env.num_envs), start_seed + ((batch_ix + 1) * env.num_envs)
-            )
-        rollout_data = rollout(
-            env=env,
-            policy=policy,
-            env_preprocessor=env_preprocessor,
-            env_postprocessor=env_postprocessor,
-            preprocessor=preprocessor,
-            postprocessor=postprocessor,
-            seeds=list(seeds) if seeds else None,
-            return_observations=return_episode_data,
-            render_callback=render_frame if max_episodes_rendered > 0 else None,
-        )
-        rollout_timing = rollout_data["timing"]
-        total_inference_s += rollout_timing["total_inference_s"]
-        num_inference_steps += rollout_timing["num_inference_steps"]
-        total_chunk_inference_s += rollout_timing["total_chunk_inference_s"]
-        num_chunk_generation_steps += rollout_timing["num_chunk_generation_steps"]
-        num_chunk_classified_steps += rollout_timing["num_chunk_classified_steps"]
-
-        # Figure out where in each rollout sequence the first done condition was encountered (results after
-        # this won't be included).
-        n_steps = rollout_data["done"].shape[1]
-        # Note: this relies on a property of argmax: that it returns the first occurrence as a tiebreaker.
-        done_indices = torch.argmax(rollout_data["done"].to(int), dim=1)
-
-        # Make a mask with shape (batch, n_steps) to mask out rollout data after the first done
-        # (batch-element-wise). Note the `done_indices + 1` to make sure to keep the data from the done step.
-        mask = (torch.arange(n_steps) <= einops.repeat(done_indices + 1, "b -> b s", s=n_steps)).int()
-        # Extend metrics.
-        batch_sum_rewards = einops.reduce((rollout_data["reward"] * mask), "b n -> b", "sum")
-        sum_rewards.extend(batch_sum_rewards.tolist())
-        batch_max_rewards = einops.reduce((rollout_data["reward"] * mask), "b n -> b", "max")
-        max_rewards.extend(batch_max_rewards.tolist())
-        batch_successes = einops.reduce((rollout_data["success"] * mask), "b n -> b", "any")
-        all_successes.extend(batch_successes.tolist())
-        if seeds:
-            all_seeds.extend(seeds)
-        else:
-            all_seeds.append(None)
-
-        # FIXME: episode_data is either None or it doesn't exist
-        if return_episode_data:
-            this_episode_data = _compile_episode_data(
-                rollout_data,
-                done_indices,
-                start_episode_index=batch_ix * env.num_envs,
-                start_data_index=(0 if episode_data is None else (episode_data["index"][-1].item() + 1)),
-                fps=env.unwrapped.metadata["render_fps"],
-            )
-            if episode_data is None:
-                episode_data = this_episode_data
+            if start_seed is None:
+                seeds = None
             else:
-                # Some sanity checks to make sure we are correctly compiling the data.
-                assert episode_data["episode_index"][-1] + 1 == this_episode_data["episode_index"][0]
-                assert episode_data["index"][-1] + 1 == this_episode_data["index"][0]
-                # Concatenate the episode data.
-                episode_data = {k: torch.cat([episode_data[k], this_episode_data[k]]) for k in episode_data}
-
-        # Maybe render video for visualization.
-        if max_episodes_rendered > 0 and len(ep_frames) > 0:
-            batch_stacked_frames = np.stack(ep_frames, axis=1)  # (b, t, *)
-            for stacked_frames, done_index in zip(
-                batch_stacked_frames, done_indices.flatten().tolist(), strict=False
-            ):
-                if n_episodes_rendered >= max_episodes_rendered:
-                    break
-
-                videos_dir.mkdir(parents=True, exist_ok=True)
-                video_path = videos_dir / f"eval_episode_{n_episodes_rendered}.mp4"
-                video_paths.append(str(video_path))
-                thread = threading.Thread(
-                    target=write_video,
-                    args=(
-                        str(video_path),
-                        stacked_frames[: done_index + 1],  # + 1 to capture the last observation
-                        env.unwrapped.metadata["render_fps"],
-                    ),
+                seeds = range(
+                    start_seed + (batch_ix * env.num_envs),
+                    start_seed + ((batch_ix + 1) * env.num_envs),
                 )
-                thread.start()
-                threads.append(thread)
-                n_episodes_rendered += 1
+            rollout_data = rollout(
+                env=env,
+                policy=policy,
+                env_preprocessor=env_preprocessor,
+                env_postprocessor=env_postprocessor,
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+                seeds=list(seeds) if seeds else None,
+                return_observations=return_episode_data,
+                render_callback=render_frame if max_episodes_rendered > 0 else None,
+                action_source=action_source,
+            )
+            rollout_timing = rollout_data["timing"]
+            total_inference_s += rollout_timing["total_inference_s"]
+            num_inference_steps += rollout_timing["num_inference_steps"]
+            total_chunk_inference_s += rollout_timing["total_chunk_inference_s"]
+            num_chunk_generation_steps += rollout_timing["num_chunk_generation_steps"]
+            num_chunk_classified_steps += rollout_timing["num_chunk_classified_steps"]
+            for key, value in rollout_data.get("async_metrics_raw", {}).items():
+                async_metrics_raw[key] += value
 
-        progbar.set_postfix(
-            {"running_success_rate": f"{np.mean(all_successes[:n_episodes]).item() * 100:.1f}%"}
-        )
+            # Figure out where in each rollout sequence the first done condition was encountered (results
+            # after this won't be included).
+            n_steps = rollout_data["done"].shape[1]
+            # Note: this relies on a property of argmax: that it returns the first occurrence as a tiebreaker.
+            done_indices = torch.argmax(rollout_data["done"].to(int), dim=1)
+
+            # Make a mask with shape (batch, n_steps) to mask out rollout data after the first done
+            # (batch-element-wise). Note the `done_indices + 1` to keep the data from the done step.
+            mask = (torch.arange(n_steps) <= einops.repeat(done_indices + 1, "b -> b s", s=n_steps)).int()
+            # Extend metrics.
+            batch_sum_rewards = einops.reduce((rollout_data["reward"] * mask), "b n -> b", "sum")
+            sum_rewards.extend(batch_sum_rewards.tolist())
+            batch_max_rewards = einops.reduce((rollout_data["reward"] * mask), "b n -> b", "max")
+            max_rewards.extend(batch_max_rewards.tolist())
+            batch_successes = einops.reduce((rollout_data["success"] * mask), "b n -> b", "any")
+            all_successes.extend(batch_successes.tolist())
+            if seeds:
+                all_seeds.extend(seeds)
+            else:
+                all_seeds.append(None)
+
+            # FIXME: episode_data is either None or it doesn't exist
+            if return_episode_data:
+                this_episode_data = _compile_episode_data(
+                    rollout_data,
+                    done_indices,
+                    start_episode_index=batch_ix * env.num_envs,
+                    start_data_index=(
+                        0 if episode_data is None else (episode_data["index"][-1].item() + 1)
+                    ),
+                    fps=env.unwrapped.metadata["render_fps"],
+                )
+                if episode_data is None:
+                    episode_data = this_episode_data
+                else:
+                    # Some sanity checks to make sure we are correctly compiling the data.
+                    assert episode_data["episode_index"][-1] + 1 == this_episode_data["episode_index"][0]
+                    assert episode_data["index"][-1] + 1 == this_episode_data["index"][0]
+                    # Concatenate the episode data.
+                    episode_data = {
+                        k: torch.cat([episode_data[k], this_episode_data[k]]) for k in episode_data
+                    }
+
+            # Maybe render video for visualization.
+            if max_episodes_rendered > 0 and len(ep_frames) > 0:
+                batch_stacked_frames = np.stack(ep_frames, axis=1)  # (b, t, *)
+                for stacked_frames, done_index in zip(
+                    batch_stacked_frames, done_indices.flatten().tolist(), strict=False
+                ):
+                    if n_episodes_rendered >= max_episodes_rendered:
+                        break
+
+                    videos_dir.mkdir(parents=True, exist_ok=True)
+                    video_path = videos_dir / f"eval_episode_{n_episodes_rendered}.mp4"
+                    video_paths.append(str(video_path))
+                    thread = threading.Thread(
+                        target=write_video,
+                        args=(
+                            str(video_path),
+                            stacked_frames[: done_index + 1],  # + 1 to capture the last observation
+                            env.unwrapped.metadata["render_fps"],
+                        ),
+                    )
+                    thread.start()
+                    threads.append(thread)
+                    n_episodes_rendered += 1
+
+            progbar.set_postfix(
+                {"running_success_rate": f"{np.mean(all_successes[:n_episodes]).item() * 100:.1f}%"}
+            )
+    finally:
+        close_action_source = getattr(action_source, "close", None)
+        if callable(close_action_source):
+            close_action_source()
 
     # Wait till all video rendering threads are done.
     for thread in threads:
@@ -539,6 +620,10 @@ def eval_policy(
             ),
         },
     }
+    async_metrics = _async_metrics_from_raw(dict(async_metrics_raw))
+    if async_metrics:
+        info["timing"]["async_metrics_raw"] = dict(async_metrics_raw)
+        info["aggregated"].update(async_metrics)
 
     if return_episode_data:
         info["episodes"] = episode_data
@@ -639,6 +724,15 @@ def eval_main(cfg: EvalPipelineConfig):
 
     # Create environment-specific preprocessor and postprocessor (e.g., for LIBERO environments)
     env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg=cfg.env, policy_cfg=cfg.policy)
+    action_source_factory = make_async_eval_action_source_factory(cfg.eval)
+    if action_source_factory is not None:
+        logging.info(
+            "Using %s async policy eval (actions_per_chunk=%s, threshold=%s, aggregate=%s).",
+            cfg.eval.async_policy,
+            cfg.eval.async_actions_per_chunk or "auto",
+            cfg.eval.async_chunk_size_threshold,
+            cfg.eval.async_aggregate_fn_name,
+        )
 
     with torch.no_grad(), torch.autocast(device_type=device.type) if cfg.policy.use_amp else nullcontext():
         info = eval_policy_all(
@@ -653,6 +747,7 @@ def eval_main(cfg: EvalPipelineConfig):
             videos_dir=Path(cfg.output_dir) / "videos",
             start_seed=cfg.seed,
             max_parallel_tasks=cfg.env.max_parallel_tasks,
+            action_source_factory=action_source_factory,
         )
         print("Overall Aggregated Metrics:")
         print(info["overall"])
@@ -682,6 +777,7 @@ class TaskMetrics(TypedDict):
     total_chunk_inference_s: float
     num_chunk_generation_steps: int
     num_chunk_classified_steps: int
+    async_metrics_raw: dict[str, float]
 
 
 def _can_reopen_after_close(env: Any) -> bool:
@@ -706,6 +802,7 @@ def _new_task_accumulator() -> dict[str, Any]:
         "total_chunk_inference_s": 0.0,
         "num_chunk_generation_steps": 0,
         "num_chunk_classified_steps": 0,
+        "async_metrics_raw": defaultdict(float),
     }
 
 
@@ -722,6 +819,7 @@ def eval_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    action_source_factory: ActionSourceFactory | None = None,
 ) -> TaskMetrics:
     """Evaluates one task_id of one suite using the provided vec env."""
 
@@ -739,6 +837,7 @@ def eval_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        action_source_factory=action_source_factory,
     )
 
     per_episode = task_result["per_episode"]
@@ -753,6 +852,7 @@ def eval_one(
         total_chunk_inference_s=timing.get("total_chunk_inference_s", 0.0),
         num_chunk_generation_steps=timing.get("num_chunk_generation_steps", 0),
         num_chunk_classified_steps=timing.get("num_chunk_classified_steps", 0),
+        async_metrics_raw=timing.get("async_metrics_raw", {}),
     )
 
 
@@ -771,6 +871,7 @@ def run_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    action_source_factory: ActionSourceFactory | None = None,
 ):
     """
     Run eval_one for a single (task_group, task_id, env).
@@ -795,6 +896,7 @@ def run_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        action_source_factory=action_source_factory,
     )
     # ensure we always provide video_paths key to simplify accumulation
     if max_episodes_rendered > 0:
@@ -816,6 +918,7 @@ def eval_policy_all(
     return_episode_data: bool = False,
     start_seed: int | None = None,
     max_parallel_tasks: int = 1,
+    action_source_factory: ActionSourceFactory | None = None,
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
@@ -863,6 +966,9 @@ def eval_policy_all(
         ):
             group_acc[group][key] += metrics.get(key, 0)
             overall[key] += metrics.get(key, 0)
+        for key, value in metrics.get("async_metrics_raw", {}).items():
+            group_acc[group]["async_metrics_raw"][key] += value
+            overall["async_metrics_raw"][key] += value
 
     # Choose runner (sequential vs threaded)
     task_runner = partial(
@@ -877,6 +983,7 @@ def eval_policy_all(
         videos_dir=videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        action_source_factory=action_source_factory,
     )
 
     if max_parallel_tasks <= 1:
@@ -943,6 +1050,7 @@ def eval_policy_all(
                 acc["num_chunk_generation_steps"] * 100, acc["num_chunk_classified_steps"]
             ),
         }
+        groups_aggregated[group].update(_async_metrics_from_raw(dict(acc["async_metrics_raw"])))
 
     # overall aggregates
     overall_agg = {
@@ -961,6 +1069,7 @@ def eval_policy_all(
             overall["num_chunk_generation_steps"] * 100, overall["num_chunk_classified_steps"]
         ),
     }
+    overall_agg.update(_async_metrics_from_raw(dict(overall["async_metrics_raw"])))
 
     return {
         "per_task": per_task_infos,

@@ -33,7 +33,8 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from contextlib import suppress
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 import torch
@@ -86,6 +87,19 @@ class PlannerMetrics:
             "async_wallclock_inference_s_total": self.sum_wallclock_inference_s,
             "async_num_stale_actions_dropped": float(self.num_stale_actions_dropped),
         }
+
+    def raw_dict(self) -> dict[str, float]:
+        return {field.name: getattr(self, field.name) for field in fields(self)}
+
+    @classmethod
+    def from_raw_dict(cls, raw: dict[str, float]) -> PlannerMetrics:
+        defaults = cls()
+        kwargs = {}
+        for metric_field in fields(cls):
+            default = getattr(defaults, metric_field.name)
+            value = raw.get(metric_field.name, default)
+            kwargs[metric_field.name] = int(value) if isinstance(default, int) else float(value)
+        return cls(**kwargs)
 
 
 class LocalAsyncPlanner:
@@ -210,9 +224,9 @@ class LocalAsyncPlanner:
 
         Returns the number of stale actions dropped.
         """
-        K = chunk.shape[1]
+        chunk_len = chunk.shape[1]
         dropped = 0
-        for k in range(K):
+        for k in range(chunk_len):
             step = origin + k
             if step < self._current_step:
                 dropped += 1
@@ -227,7 +241,7 @@ class LocalAsyncPlanner:
         # Keep the queue ordered so `_should_predict_locked` and debug prints
         # see steps in ascending order.
         self._queue = OrderedDict(sorted(self._queue.items()))
-        self._last_chunk_size = K
+        self._last_chunk_size = chunk_len
         self.metrics.num_chunks_generated += 1
         self.metrics.num_stale_actions_dropped += dropped
         return dropped
@@ -387,10 +401,8 @@ class BackgroundAsyncPlanner(LocalAsyncPlanner):
         self._drain_outbox(discard_all=True)
 
     def __del__(self):
-        try:
+        with suppress(Exception):
             self.close()
-        except Exception:
-            pass
 
     # ---------- drop-in policy API ----------
 
