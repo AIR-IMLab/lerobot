@@ -61,6 +61,10 @@ from lerobot.utils.utils import (
 from .lerobot_eval import eval_policy_all, make_async_eval_action_source_factory
 
 
+def _scalar_metrics_for_wandb(metrics: dict[str, Any]) -> dict[str, int | float | str]:
+    return {key: value for key, value in metrics.items() if isinstance(value, (int | float | str))}
+
+
 def update_policy(
     train_metrics: MetricsTracker,
     policy: PreTrainedPolicy,
@@ -555,7 +559,7 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                 eval_tracker.avg_chunk_inference_s = aggregated.pop("avg_chunk_inference_s", float("nan"))
                 eval_tracker.pc_chunk_generation = aggregated.pop("pc_chunk_generation", float("nan"))
                 if wandb_logger:
-                    wandb_log_dict = {**eval_tracker.to_dict(), **eval_info}
+                    wandb_log_dict = {**eval_tracker.to_dict(), **_scalar_metrics_for_wandb(aggregated)}
                     wandb_logger.log_dict(wandb_log_dict, step, mode="eval")
                     wandb_logger.log_video(eval_info["overall"]["video_paths"][0], step, mode="eval")
 
